@@ -1,11 +1,17 @@
 import os
-from crewai.tools import BaseTool
+from langchain.tools import BaseTool
 from dotenv import load_dotenv
-from tripadvisor_client import TripAdvisorClient
 from crewai import Agent, Task, Crew, Process
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 import logging
+from contentgeo_client import (
+    ContentGeoSearchTool,
+    ContentGeoHotelsTool,
+    ContentGeoRestaurantsTool,
+    ContentGeoAttractionsTool,
+    ContentGeoReviewsTool
+)
 
 # Логування
 logging.basicConfig(level=logging.INFO)
@@ -13,102 +19,17 @@ logger = logging.getLogger("travel_blog_crew")
 
 # Завантаження змінних середовища
 load_dotenv()
-TRIPADVISOR_API_KEY = os.getenv("TRIPADVISOR_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not TRIPADVISOR_API_KEY:
-    raise ValueError("TRIPADVISOR_API_KEY is not set in environment variables!")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in environment variables!")
 
-# Моделі даних для інструментів
-class SearchInput(BaseModel):
-    query: str = Field(..., description="The search query for locations")
-
-class LocationInput(BaseModel):
-    location_id: str = Field(..., description="The location ID to get details for")
-
-class ReviewInput(BaseModel):
-    location_id: str = Field(..., description="The location ID to get reviews for")
-    review_type: str = Field(..., description="Type of reviews to get (hotel, restaurant, attraction)")
-
-# Інструменти TripAdvisor
-class TripAdvisorSearchTool(BaseTool):
-    name = "search_locations"
-    description = "Search for locations on TripAdvisor"
-    
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.client = TripAdvisorClient(api_key=api_key)
-    
-    def _run(self, query: str) -> Dict:
-        """Search for locations."""
-        logger.info(f"Searching for location: {query}")
-        locations = self.client.search_locations(query)
-        return {"locations": locations}
-
-class TripAdvisorHotelsTool(BaseTool):
-    name = "get_hotels"
-    description = "Get hotels for a location"
-    
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.client = TripAdvisorClient(api_key=api_key)
-    
-    def _run(self, location_id: str) -> Dict:
-        """Get hotels for a location."""
-        logger.info(f"Getting hotels for location: {location_id}")
-        hotels = self.client.get_hotels(location_id)
-        return {"hotels": hotels}
-
-class TripAdvisorRestaurantsTool(BaseTool):
-    name = "get_restaurants"
-    description = "Get restaurants for a location"
-    
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.client = TripAdvisorClient(api_key=api_key)
-    
-    def _run(self, location_id: str) -> Dict:
-        """Get restaurants for a location."""
-        logger.info(f"Getting restaurants for location: {location_id}")
-        restaurants = self.client.get_restaurants(location_id)
-        return {"restaurants": restaurants}
-
-class TripAdvisorAttractionsTool(BaseTool):
-    name = "get_attractions"
-    description = "Get attractions for a location"
-    
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.client = TripAdvisorClient(api_key=api_key)
-    
-    def _run(self, location_id: str) -> Dict:
-        """Get attractions for a location."""
-        logger.info(f"Getting attractions for location: {location_id}")
-        attractions = self.client.get_attractions(location_id)
-        return {"attractions": attractions}
-
-class TripAdvisorReviewsTool(BaseTool):
-    name = "get_reviews"
-    description = "Get reviews for a location"
-    
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.client = TripAdvisorClient(api_key=api_key)
-    
-    def _run(self, location_id: str, review_type: str) -> Dict:
-        """Get reviews for a location."""
-        logger.info(f"Getting {review_type} reviews for location: {location_id}")
-        reviews = self.client.get_reviews(location_id, review_type=review_type)
-        return {"reviews": reviews}
-
 # Створення інструментів
-search_tool = TripAdvisorSearchTool(api_key=TRIPADVISOR_API_KEY)
-hotels_tool = TripAdvisorHotelsTool(api_key=TRIPADVISOR_API_KEY)
-restaurants_tool = TripAdvisorRestaurantsTool(api_key=TRIPADVISOR_API_KEY)
-attractions_tool = TripAdvisorAttractionsTool(api_key=TRIPADVISOR_API_KEY)
-reviews_tool = TripAdvisorReviewsTool(api_key=TRIPADVISOR_API_KEY)
+search_tool = ContentGeoSearchTool()
+hotels_tool = ContentGeoHotelsTool()
+restaurants_tool = ContentGeoRestaurantsTool()
+attractions_tool = ContentGeoAttractionsTool()
+reviews_tool = ContentGeoReviewsTool()
 
 # Створення агента-дослідника
 researcher = Agent(
@@ -123,7 +44,7 @@ researcher = Agent(
         reviews_tool
     ],
     verbose=True,
-    llm_config={"api_key": OPENAI_API_KEY}  # Вказуємо конфігурацію LLM
+    llm_config={"api_key": OPENAI_API_KEY}
 )
 
 # Агент-письменник
