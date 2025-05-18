@@ -2,12 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Встановлюємо git
+RUN apt-get update && apt-get install -y git
+
+# Встановлюємо залежності
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# Копіюємо файли проекту
 COPY . .
 
-# The environment variables will be passed at runtime
+# Запускаємо скрипт
 CMD ["python", "test_kyiv_blog.py"] 

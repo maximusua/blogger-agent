@@ -1,267 +1,174 @@
-from crewai import Agent, Task, Crew, Process
-from crewai.tools import BaseTool
 import os
+from crewai.tools import BaseTool
 from dotenv import load_dotenv
 from tripadvisor_client import TripAdvisorClient
-from typing import Optional, Type, Any, Dict, List, Callable
+from crewai import Agent, Task, Crew, Process
 from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
 import logging
-import json
 
-# Налаштування логування
+# Логування
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("travel_blog_crew")
 
-# Load environment variables
+# Завантаження змінних середовища
 load_dotenv()
+TRIPADVISOR_API_KEY = os.getenv("TRIPADVISOR_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Get API keys from environment variables
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-TRIPADVISOR_API_KEY = os.getenv('TRIPADVISOR_API_KEY')
+if not TRIPADVISOR_API_KEY:
+    raise ValueError("TRIPADVISOR_API_KEY is not set in environment variables!")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set in environment variables!")
 
-if not OPENAI_API_KEY or not TRIPADVISOR_API_KEY:
-    raise ValueError("Missing required API keys in .env file")
+# Моделі даних для інструментів
+class SearchInput(BaseModel):
+    query: str = Field(..., description="The search query for locations")
 
-# Initialize TripAdvisor client
-tripadvisor = TripAdvisorClient(TRIPADVISOR_API_KEY)
+class LocationInput(BaseModel):
+    location_id: str = Field(..., description="The location ID to get details for")
 
-class SearchTravelInfoInput(BaseModel):
-    query: str = Field(description="The search query for travel information")
-    description: Optional[str] = Field(None, description="Alternative description of what to search for")
+class ReviewInput(BaseModel):
+    location_id: str = Field(..., description="The location ID to get reviews for")
+    review_type: str = Field(..., description="Type of reviews to get (hotel, restaurant, attraction)")
 
-class SearchTravelInfoTool(BaseTool):
-    name: str = "search_travel_info"
-    description: str = "Search for travel information and places"
-    args_schema: Type[BaseModel] = SearchTravelInfoInput
+# Інструменти TripAdvisor
+class TripAdvisorSearchTool(BaseTool):
+    name = "search_locations"
+    description = "Search for locations on TripAdvisor"
     
-    def _run(self, query: str = None, description: str = None) -> str:
-        try:
-            # Use description if query is not provided
-            search_query = query if query else description
-            if not search_query:
-                return "No search query provided"
-            
-            logger.info(f"Searching for location: {search_query}")
-            
-            # Search locations
-            locations = tripadvisor.search_locations(search_query)
-            logger.info(f"Raw locations response: {json.dumps(locations, indent=2)}")
-            
-            if not locations or not isinstance(locations, list):
-                return f"No information found for {search_query}"
-            
-            logger.info(f"Found {len(locations)} locations")
-            
-            # Перевіряємо, чи знайдена локація відповідає запиту
-            location_id = None
-            location_name = None
-            
-            for loc in locations:
-                if not isinstance(loc, dict):
-                    continue
-                    
-                loc_name = loc.get('name', '')
-                logger.info(f"Checking location: {loc_name}")
-                
-                if search_query.lower() in loc_name.lower():
-                    location_id = loc.get('location_id')
-                    location_name = loc_name
-                    logger.info(f"Found matching location: {location_name}")
-                    break
-            
-            if not location_id:
-                if locations and isinstance(locations[0], dict):
-                    location_id = locations[0].get('location_id')
-                    location_name = locations[0].get('name', 'Unknown')
-                    logger.warning(f"Using first found location instead of exact match: {location_name}")
-                else:
-                    return f"Could not find valid location information for {search_query}"
-            
-            # Get location details
-            logger.info(f"Getting details for location ID: {location_id}")
-            details = tripadvisor.get_location_details(location_id)
-            logger.info(f"Location details received: {bool(details)}")
-            
-            if not details or not isinstance(details, dict):
-                return f"Could not get details for {location_name}"
-            
-            # Get hotels
-            logger.info("Getting hotels information")
-            hotels = tripadvisor.get_hotels(location_id)
-            if not isinstance(hotels, list):
-                hotels = []
-            logger.info(f"Found {len(hotels)} hotels")
-            
-            # Get restaurants
-            logger.info("Getting restaurants information")
-            restaurants = tripadvisor.get_restaurants(location_id)
-            if not isinstance(restaurants, list):
-                restaurants = []
-            logger.info(f"Found {len(restaurants)} restaurants")
-            
-            # Get attractions
-            logger.info("Getting attractions information")
-            attractions = tripadvisor.get_attractions(location_id)
-            if not isinstance(attractions, list):
-                attractions = []
-            logger.info(f"Found {len(attractions)} attractions")
-            
-            # Format response
-            response = f"""
-            Information about {location_name}:
-            
-            Main Information:
-            {details.get('description', 'No description available')}
-            
-            Top Hotels:
-            {', '.join([hotel.get('name', 'Unknown') for hotel in hotels[:3]]) if hotels else 'No hotels found'}
-            
-            Top Restaurants:
-            {', '.join([restaurant.get('name', 'Unknown') for restaurant in restaurants[:3]]) if restaurants else 'No restaurants found'}
-            
-            Attractions:
-            {', '.join([attraction.get('name', 'Unknown') for attraction in attractions[:3]]) if attractions else 'No attractions found'}
-            """
-            
-            return response
-        except Exception as e:
-            logger.error(f"Error in SearchTravelInfoTool: {str(e)}")
-            return f"Error while searching for information: {str(e)}"
-
-class GetReviewsInput(BaseModel):
-    location_id: str = Field(description="The location ID to get reviews for")
-
-class GetHotelReviewsTool(BaseTool):
-    name: str = "get_hotel_reviews"
-    description: str = "Get hotel reviews"
-    args_schema: Type[BaseModel] = GetReviewsInput
+    def __init__(self, api_key: str):
+        super().__init__()
+        self.client = TripAdvisorClient(api_key=api_key)
     
-    def _run(self, location_id: str) -> str:
-        try:
-            reviews = tripadvisor.get_reviews(location_id, "hotel")
-            return "\n".join([f"- {review['title']}: {review['text'][:200]}..." for review in reviews])
-        except Exception as e:
-            return f"Error while getting reviews: {str(e)}"
+    def _run(self, query: str) -> Dict:
+        """Search for locations."""
+        logger.info(f"Searching for location: {query}")
+        locations = self.client.search_locations(query)
+        return {"locations": locations}
 
-class GetRestaurantReviewsTool(BaseTool):
-    name: str = "get_restaurant_reviews"
-    description: str = "Get restaurant reviews"
-    args_schema: Type[BaseModel] = GetReviewsInput
+class TripAdvisorHotelsTool(BaseTool):
+    name = "get_hotels"
+    description = "Get hotels for a location"
     
-    def _run(self, location_id: str) -> str:
-        try:
-            reviews = tripadvisor.get_reviews(location_id, "restaurant")
-            return "\n".join([f"- {review['title']}: {review['text'][:200]}..." for review in reviews])
-        except Exception as e:
-            return f"Error while getting reviews: {str(e)}"
-
-class GetAttractionReviewsTool(BaseTool):
-    name: str = "get_attraction_reviews"
-    description: str = "Get attraction reviews"
-    args_schema: Type[BaseModel] = GetReviewsInput
+    def __init__(self, api_key: str):
+        super().__init__()
+        self.client = TripAdvisorClient(api_key=api_key)
     
-    def _run(self, location_id: str) -> str:
-        try:
-            reviews = tripadvisor.get_reviews(location_id, "attraction")
-            return "\n".join([f"- {review['title']}: {review['text'][:200]}..." for review in reviews])
-        except Exception as e:
-            return f"Error while getting reviews: {str(e)}"
+    def _run(self, location_id: str) -> Dict:
+        """Get hotels for a location."""
+        logger.info(f"Getting hotels for location: {location_id}")
+        hotels = self.client.get_hotels(location_id)
+        return {"hotels": hotels}
 
-# Create tools
-tools = [
-    SearchTravelInfoTool(),
-    GetHotelReviewsTool(),
-    GetRestaurantReviewsTool(),
-    GetAttractionReviewsTool()
-]
+class TripAdvisorRestaurantsTool(BaseTool):
+    name = "get_restaurants"
+    description = "Get restaurants for a location"
+    
+    def __init__(self, api_key: str):
+        super().__init__()
+        self.client = TripAdvisorClient(api_key=api_key)
+    
+    def _run(self, location_id: str) -> Dict:
+        """Get restaurants for a location."""
+        logger.info(f"Getting restaurants for location: {location_id}")
+        restaurants = self.client.get_restaurants(location_id)
+        return {"restaurants": restaurants}
 
-# Create agents with tools
+class TripAdvisorAttractionsTool(BaseTool):
+    name = "get_attractions"
+    description = "Get attractions for a location"
+    
+    def __init__(self, api_key: str):
+        super().__init__()
+        self.client = TripAdvisorClient(api_key=api_key)
+    
+    def _run(self, location_id: str) -> Dict:
+        """Get attractions for a location."""
+        logger.info(f"Getting attractions for location: {location_id}")
+        attractions = self.client.get_attractions(location_id)
+        return {"attractions": attractions}
+
+class TripAdvisorReviewsTool(BaseTool):
+    name = "get_reviews"
+    description = "Get reviews for a location"
+    
+    def __init__(self, api_key: str):
+        super().__init__()
+        self.client = TripAdvisorClient(api_key=api_key)
+    
+    def _run(self, location_id: str, review_type: str) -> Dict:
+        """Get reviews for a location."""
+        logger.info(f"Getting {review_type} reviews for location: {location_id}")
+        reviews = self.client.get_reviews(location_id, review_type=review_type)
+        return {"reviews": reviews}
+
+# Створення інструментів
+search_tool = TripAdvisorSearchTool(api_key=TRIPADVISOR_API_KEY)
+hotels_tool = TripAdvisorHotelsTool(api_key=TRIPADVISOR_API_KEY)
+restaurants_tool = TripAdvisorRestaurantsTool(api_key=TRIPADVISOR_API_KEY)
+attractions_tool = TripAdvisorAttractionsTool(api_key=TRIPADVISOR_API_KEY)
+reviews_tool = TripAdvisorReviewsTool(api_key=TRIPADVISOR_API_KEY)
+
+# Створення агента-дослідника
 researcher = Agent(
     role='Travel Researcher',
-    goal='Gather detailed and accurate information about travel destinations',
-    backstory="""You are a travel expert with extensive experience in researching different countries and cultures.
-    You know how to find the most interesting places and events. Your expertise helps create comprehensive travel guides.""",
-    tools=tools,
-    verbose=True
+    goal='Find and summarize the most important travel information about the destination',
+    backstory='Expert in travel research, always finds the best and most up-to-date information.',
+    tools=[
+        search_tool,
+        hotels_tool,
+        restaurants_tool,
+        attractions_tool,
+        reviews_tool
+    ],
+    verbose=True,
+    llm_config={"api_key": OPENAI_API_KEY}  # Вказуємо конфігурацію LLM
 )
 
+# Агент-письменник
 writer = Agent(
     role='Travel Blogger',
-    goal='Create engaging and informative travel blogs',
-    backstory="""You are a professional blogger with years of experience writing travel articles.
-    You know how to make content interesting and useful for readers. Your writing style is engaging and personal.""",
+    goal='Write an engaging and informative travel blog post based on the research',
+    backstory='Professional travel blogger with a passion for storytelling.',
     verbose=True
 )
 
+# Агент-редактор
 editor = Agent(
     role='Content Editor',
-    goal='Review and improve content quality',
-    backstory="""You are an experienced editor specializing in travel content.
-    You help make text clearer and more appealing. Your attention to detail ensures high-quality content.""",
+    goal='Edit and improve the travel blog post for clarity, style, and accuracy',
+    backstory='Experienced editor specializing in travel content.',
     verbose=True
 )
 
-# Create tasks
+# Завдання
 research_task = Task(
-    description="""Research the travel destination and gather important information:
-    1. Main attractions and landmarks
-    2. Local culture and traditions
-    3. Best places to stay
-    4. Local cuisine
-    5. Transportation options
-    6. Best time to visit
-    7. Tourist reviews of hotels, restaurants, and attractions""",
-    agent=researcher,
-    expected_output="""A comprehensive research report containing:
-    1. Detailed information about main attractions and landmarks
-    2. Insights about local culture and traditions
-    3. List of recommended accommodations
-    4. Overview of local cuisine and food options
-    5. Transportation information and tips
-    6. Best time to visit recommendations
-    7. Curated selection of tourist reviews"""
+    description='Research the travel destination and gather important information:\n    1. Main attractions and landmarks\n    2. Local culture and traditions\n    3. Best places to stay\n    4. Local cuisine\n    5. Transportation options\n    6. Best time to visit\n    7. Tourist reviews of hotels, restaurants, and attractions',
+    expected_output='A structured research report with all the requested information.',
+    agent=researcher
 )
 
 writing_task = Task(
-    description="""Write an engaging travel blog based on the researched information:
-    1. Create an attractive title
-    2. Write an introduction that captures readers' interest
-    3. Structure information in logical sections
-    4. Add personal observations and recommendations
-    5. Include real tourist reviews
-    6. End with an appealing conclusion""",
+    description='Write an engaging travel blog based on the researched information:\n    1. Create an attractive title\n    2. Write an introduction that captures readers\' interest\n    3. Structure information in logical sections\n    4. Add personal observations and recommendations\n    5. Include real tourist reviews\n    6. End with an appealing conclusion',
+    expected_output='A complete travel blog post in Markdown format.',
     agent=writer,
-    expected_output="""A well-structured travel blog post that includes:
-    1. An engaging title
-    2. Captivating introduction
-    3. Well-organized sections with detailed information
-    4. Personal insights and recommendations
-    5. Relevant tourist reviews
-    6. Strong conclusion"""
+    depends_on=[research_task]
 )
 
 editing_task = Task(
-    description="""Edit and improve the blog:
-    1. Check grammar and punctuation
-    2. Improve structure and readability
-    3. Ensure information is accurate and up-to-date
-    4. Verify proper citation of reviews
-    5. Add recommendations for improvement""",
+    description='Edit and improve the blog:\n    1. Check grammar and punctuation\n    2. Improve structure and readability\n    3. Ensure information is accurate and up-to-date\n    4. Verify proper citation of reviews\n    5. Add recommendations for improvement',
+    expected_output='A polished and publication-ready travel blog post.',
     agent=editor,
-    expected_output="""A polished and professional blog post that is:
-    1. Grammatically correct
-    2. Well-structured and easy to read
-    3. Factually accurate
-    4. Properly cited
-    5. Enhanced with editorial recommendations"""
+    depends_on=[writing_task]
 )
 
-# Create crew
+# Crew
 crew = Crew(
     agents=[researcher, writer, editor],
     tasks=[research_task, writing_task, editing_task],
+    process=Process.sequential,
     verbose=True,
-    process=Process.sequential
 )
 
 # Run crew
